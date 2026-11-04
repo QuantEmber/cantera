@@ -764,12 +764,15 @@ void Substance::set_xv(propertyFlag::type ifx, double X, double v,
         Rho = Rho_save;
     }
 
-    // At constant specific volume, internal energy and entropy are increasing
-    // functions of temperature for any thermodynamically stable equation of
-    // state (du/dT = cv > 0, ds/dT = cv/T > 0), both for single-phase states and
+    // At constant specific volume, internal energy and entropy increase with
+    // temperature wherever the equation of state is thermodynamically stable
+    // (du/dT = cv > 0, ds/dT = cv/T > 0), both for single-phase states and
     // inside the saturation dome, where the lever rule applies. Setting the
-    // state is therefore a one-dimensional root-finding problem in T, which is
-    // not affected by the kink in the derivatives at the saturation boundary.
+    // state is then a one-dimensional root-finding problem in T, which is not
+    // affected by the kink in the derivatives at the saturation boundary. (The
+    // tpx heptane equation of state has cv < 0 in part of its low-temperature
+    // range; there the root need not be unique, and the bracket finds one of
+    // the valid temperatures.)
     double Tlow = Tmin();
     double Thigh = Tmax();
     auto resid = [&](double t) {
@@ -790,11 +793,12 @@ void Substance::set_xv(propertyFlag::type ifx, double X, double v,
     }
 
     // Bracket the root by stepping away from t0 in the direction of the root,
-    // doubling the step each time and never leaving [Tmin, Tmax]
+    // doubling the step each time and never leaving [Tmin, Tmax]. Stop as soon
+    // as the root is bracketed or hit exactly (including at Tmin or Tmax).
     double ta = t0, fa = f0;
     double tb = t0, fb = f0;
     double step = 0.02 * t0;
-    while ((fa < 0.0) == (fb < 0.0)) {
+    while (fa != 0.0 && fb != 0.0 && (fa < 0.0) == (fb < 0.0)) {
         if (f0 < 0.0) {
             if (tb == Thigh) {
                 fail(fmt::format("At temperature limit (Tmax = {})", Thigh));

@@ -743,6 +743,22 @@ class TestPureFluidConvergence:
             assert h2.u == approx(u, rel=1e-8)
             assert h2.v == approx(v, rel=1e-8)
 
+    def test_UV_SV_errors(self):
+        # Error paths of the bracketed fallback used for UV and SV (see #971)
+        h2 = ct.Hydrogen()
+        h2.PQ = 1.5 * ct.one_atm, 0.8
+        u, s, v = h2.u, h2.s, h2.v
+        with pytest.raises(ct.CanteraError, match="Invalid specific volume"):
+            h2.UV = u, -v
+        with pytest.raises(ct.CanteraError, match=r"temperature limit \(Tmax"):
+            h2.UV = u + 1e9, v
+        with pytest.raises(ct.CanteraError, match=r"temperature limit \(Tmin"):
+            h2.UV = u - 1e9, v
+        with pytest.raises(ct.CanteraError, match=r"temperature limit \(Tmax"):
+            h2.SV = s + 1e6, v
+        with pytest.raises(ct.CanteraError, match=r"temperature limit \(Tmin"):
+            h2.SV = s - 1e6, v
+
     def test_HP(self):
         h0 = -1.58581e7
         HH = np.array([0, 100, 200, 500, 1000, 1500, 2000]) * 1000 + h0
