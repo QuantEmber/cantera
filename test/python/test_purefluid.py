@@ -518,6 +518,38 @@ class PureFluidTestCases:
             assert self.fluid.s - self.s0 == approx(state.s - self.refState.s,
                    rel=self.tol.s * state.tolMod), msg
 
+    @pytest.mark.parametrize("pair", ["UV", "SV"])
+    def test_set_near_saturation(self, pair):
+        # Round-trip UV and SV states at the specific volume of a saturated
+        # state, with temperature offsets on both sides of the saturation
+        # boundary. See https://github.com/Cantera/cantera/issues/971
+        # Low reduced temperatures are excluded because the heptane equation of
+        # state has cv < 0 at some compressed-liquid states there, so (u, v) and
+        # (s, v) do not determine T uniquely.
+        Tmin = self.fluid.min_temp
+        Tc = self.fluid.critical_temperature
+        errors = []
+        for Tr, Q, dT in itertools.product([0.3, 0.5, 0.8, 0.95],
+                                           [0.0, 0.02, 0.5, 0.98, 1.0],
+                                           [-0.05, -0.01, -1e-3, 1e-3, 0.01, 0.05]):
+            T0 = Tmin + Tr * (Tc - Tmin)
+            self.fluid.TQ = T0, Q
+            v = self.fluid.v
+            T1 = T0 * (1 + dT)
+            if T1 < Tmin:
+                continue
+            self.fluid.TV = T1, v
+            target = self.fluid.u if pair == "UV" else self.fluid.s
+            # Start from the saturated state, as in the original report
+            self.fluid.TQ = T0, Q
+            try:
+                setattr(self.fluid, pair, (target, v))
+                assert self.fluid.T == approx(T1, rel=1e-6)
+                assert self.fluid.v == approx(v, rel=1e-8)
+            except (ct.CanteraError, AssertionError) as err:
+                errors.append(f"T0={T0}, Q={Q}, T1={T1}: {err}")
+        assert not errors, "\n".join(errors)
+
 
 class TestHFC134a(PureFluidTestCases):
     """
@@ -699,6 +731,17 @@ class TestPureFluidConvergence:
         if errors:
             errors += 'Total error count:%s\n' % nErrors
             raise AssertionError(errors)
+
+    def test_UV_near_saturated_vapor(self):
+        # Regression test for https://github.com/Cantera/cantera/issues/971
+        h2 = ct.Hydrogen()
+        for du in [176000, 178000, 179000]:
+            h2.PQ = 1.5 * ct.one_atm, 0.8
+            u = h2.u + du / h2.density
+            v = h2.v
+            h2.UV = u, None
+            assert h2.u == approx(u, rel=1e-8)
+            assert h2.v == approx(v, rel=1e-8)
 
     def test_HP(self):
         h0 = -1.58581e7

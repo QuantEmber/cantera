@@ -12,6 +12,9 @@
 #include "cantera/base/global.h"
 #include <cmath>
 #include <limits>
+#include <boost/math/tools/roots.hpp>
+
+namespace bmt = boost::math::tools;
 
 using namespace Cantera;
 
@@ -402,8 +405,7 @@ void Substance::Set(PropertyPair::type XY, double x0, double y0)
                x0, y0, TolAbsT, TolAbsP, TolRel, TolRel);
         break;
     case PropertyPair::UV:
-        set_xy(propertyFlag::U, propertyFlag::V,
-               x0, y0, TolAbsU, TolAbsV, TolRel, TolRel);
+        set_xv(propertyFlag::U, x0, y0, TolAbsU, TolAbsV, TolRel);
         break;
     case PropertyPair::ST:
         if (Lever(Tgiven, y0, x0, propertyFlag::S)) {
@@ -413,8 +415,7 @@ void Substance::Set(PropertyPair::type XY, double x0, double y0)
                x0, y0, TolAbsS, TolAbsT, TolRel, TolRel);
         break;
     case PropertyPair::SV:
-        set_xy(propertyFlag::S, propertyFlag::V,
-               x0, y0, TolAbsS, TolAbsV, TolRel, TolRel);
+        set_xv(propertyFlag::S, x0, y0, TolAbsS, TolAbsV, TolRel);
         break;
     case PropertyPair::UP:
         if (Lever(Pgiven, y0, x0, propertyFlag::U)) {
@@ -737,6 +738,104 @@ void Substance::set_xy(propertyFlag::type ifx, propertyFlag::type ify,
             throw CanteraError("Substance::set_xy", msg);
         }
     }
+}
+
+void Substance::set_xv(propertyFlag::type ifx, double X, double v,
+                       double atx, double atv, double rtx)
+{
+    if (v <= 0.0) {
+        throw CanteraError("Substance::set_xv",
+                           "Invalid specific volume: {}", v);
+    }
+
+    // The two-dimensional Newton iteration in set_xy() is fast and is kept as
+    // the first attempt, so that results do not change where it already
+    // converges. Its finite-difference Jacobian is discontinuous at the
+    // saturation boundary, though, and the iteration can cycle between the
+    // single-phase and two-phase sides without converging (see GitHub issue
+    // #971). In that case, fall back to the bracketing method below.
+    double T_save = T;
+    double Rho_save = Rho;
+    try {
+        set_xy(ifx, propertyFlag::V, X, v, atx, atv, rtx, rtx);
+        return;
+    } catch (CanteraError&) {
+        T = T_save;
+        Rho = Rho_save;
+    }
+
+    // At constant specific volume, internal energy and entropy are increasing
+    // functions of temperature for any thermodynamically stable equation of
+    // state (du/dT = cv > 0, ds/dT = cv/T > 0), both for single-phase states and
+    // inside the saturation dome, where the lever rule applies. Setting the
+    // state is therefore a one-dimensional root-finding problem in T, which is
+    // not affected by the kink in the derivatives at the saturation boundary.
+    double Tlow = Tmin();
+    double Thigh = Tmax();
+    auto resid = [&](double t) {
+        Set(PropertyPair::TV, t, v);
+        return prop(ifx) - X;
+    };
+    auto fail = [&](const string& reason) {
+        throw CanteraError("Substance::set_xv", "No convergence. {} = {}, V = {}"
+                           "\n{}", propertySymbols[ifx], X, v, reason);
+    };
+
+    // Starting point: the current temperature if it is defined, else a
+    // supercritical value (consistent with set_xy)
+    double t0 = (T == Undef) ? 1.1 * Tcrit() : clip(T, Tlow, Thigh);
+    double f0 = resid(t0);
+    if (f0 == 0.0) {
+        return;
+    }
+
+    // Bracket the root by stepping away from t0 in the direction of the root,
+    // doubling the step each time and never leaving [Tmin, Tmax]
+    double ta = t0, fa = f0;
+    double tb = t0, fb = f0;
+    double step = 0.02 * t0;
+    while ((fa < 0.0) == (fb < 0.0)) {
+        if (f0 < 0.0) {
+            if (tb == Thigh) {
+                fail(fmt::format("At temperature limit (Tmax = {})", Thigh));
+            }
+            ta = tb;
+            fa = fb;
+            tb = std::min(tb + step, Thigh);
+            fb = resid(tb);
+        } else {
+            if (ta == Tlow) {
+                fail(fmt::format("At temperature limit (Tmin = {})", Tlow));
+            }
+            tb = ta;
+            fb = fa;
+            ta = std::max(ta - step, Tlow);
+            fa = resid(ta);
+        }
+        step *= 2.0;
+    }
+    if (fa == 0.0 || fb == 0.0) {
+        Set(PropertyPair::TV, (fa == 0.0) ? ta : tb, v);
+        return;
+    }
+
+    boost::uintmax_t maxiter = 100;
+    std::pair<double, double> TT;
+    try {
+        TT = bmt::toms748_solve(resid, ta, tb, fa, fb,
+                                bmt::eps_tolerance<double>(48), maxiter);
+    } catch (std::exception& err) {
+        fail(err.what());
+    }
+
+    // Accept whichever end of the final bracket satisfies the tolerance
+    for (double t : {0.5 * (TT.first + TT.second), TT.first, TT.second}) {
+        if (fabs(resid(t)) < atx + rtx * fabs(X)) {
+            return;
+        }
+    }
+    fail(fmt::format("Bracketed temperature interval [{}, {}] does not satisfy "
+                     "the tolerance", TT.first, TT.second));
 }
 
 double Substance::prop(propertyFlag::type ijob)

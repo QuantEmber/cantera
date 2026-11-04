@@ -225,6 +225,13 @@ private:
                 double X, double Y,
                 double atx, double aty, double rtx, double rty);
 
+    //! Set the state for a property pair where one property is the specific
+    //! volume *v* and the other (*ifx*, either U or S) increases monotonically
+    //! with temperature at constant volume. Tries set_xy() first, and if that
+    //! fails to converge, uses a bracketing root finder in T.
+    void set_xv(propertyFlag::type ifx, double X, double v,
+                double atx, double atv, double rtx);
+
     int kbr = 0;
     double Vmin, Vmax;
     double Pmin, Pmax;
